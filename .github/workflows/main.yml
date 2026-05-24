@@ -35,7 +35,7 @@ jobs:
           sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
           sed -i 's/.*CONFIG_FEATURE_UTMP.*/CONFIG_FEATURE_UTMP=n/' .config
           yes "" | make oldconfig
-          make -j$(nproc)
+          make V=1 -j1
           make CONFIG_PREFIX=$GITHUB_WORKSPACE/rootfs install
 
       - name: Assemble rootfs
