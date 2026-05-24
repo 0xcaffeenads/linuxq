@@ -7,15 +7,8 @@ on:
 
 env:
   BUSYBOX_VER: "1.37.0"
-  ZLIB_VER: "1.3.1"
-  OPENSSL_VER: "3.3.2"
-  CURL_VER: "8.11.0"
-  EXPAT_VER: "2.6.4"
-  GIT_VER: "2.47.1"
-  SYSROOT: "/tmp/sysroot"
   ROOTFS: "/tmp/rootfs"
   IMAGE: "rootfs.ext4"
-  IMAGE_MB: "256"
 
 jobs:
   build:
@@ -27,127 +20,18 @@ jobs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
-          build-essential libncurses-dev bison flex autoconf automake \
-          libtool pkg-config libelf-dev bc cpio xz-utils \
-          e2fsprogs musl-tools gettext perl
-
-    - name: create build directories
-      run: |
-        mkdir -p ${{ env.SYSROOT }}/{include,lib,bin,share}
-        mkdir -p ${{ env.ROOTFS }}
-
-    - name: build zlib
-      run: |
-        cd /tmp
-        wget -q https://zlib.net/zlib-${{ env.ZLIB_VER }}.tar.gz
-        tar xf zlib-${{ env.ZLIB_VER }}.tar.gz
-        cd zlib-${{ env.ZLIB_VER }}
-        CC=musl-gcc ./configure --prefix=${{ env.SYSROOT }} --static
-        make -j$(nproc)
-        make install
-
-    - name: build openssl
-      run: |
-        cd /tmp
-        wget -q https://www.openssl.org/source/openssl-${{ env.OPENSSL_VER }}.tar.gz
-        tar xf openssl-${{ env.OPENSSL_VER }}.tar.gz
-        cd openssl-${{ env.OPENSSL_VER }}
-        CC=musl-gcc ./Configure linux-x86_64 \
-          --prefix=${{ env.SYSROOT }} \
-          --openssldir=/etc/ssl \
-          no-shared no-tests no-ui-console \
-          -I${{ env.SYSROOT }}/include \
-          -L${{ env.SYSROOT }}/lib
-        make -j$(nproc)
-        make install_sw
-
-    - name: build curl
-      run: |
-        cd /tmp
-        wget -q https://curl.se/download/curl-${{ env.CURL_VER }}.tar.gz
-        tar xf curl-${{ env.CURL_VER }}.tar.gz
-        cd curl-${{ env.CURL_VER }}
-        CC=musl-gcc \
-        CFLAGS="-I${{ env.SYSROOT }}/include" \
-        LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
-        PKG_CONFIG_PATH="${{ env.SYSROOT }}/lib/pkgconfig" \
-        ./configure \
-          --prefix=${{ env.SYSROOT }} \
-          --enable-static \
-          --disable-shared \
-          --with-openssl=${{ env.SYSROOT }} \
-          --without-libpsl \
-          --without-libidn2 \
-          --without-brotli \
-          --without-zstd \
-          --without-nghttp2 \
-          --disable-ldap \
-          --disable-manual
-        make -j$(nproc)
-        make install
-
-    - name: build expat
-      run: |
-        cd /tmp
-        ETAG=$(echo "${{ env.EXPAT_VER }}" | tr '.' '_')
-        wget -q "https://github.com/libexpat/libexpat/releases/download/R_${ETAG}/expat-${{ env.EXPAT_VER }}.tar.gz"
-        tar xf expat-${{ env.EXPAT_VER }}.tar.gz
-        cd expat-${{ env.EXPAT_VER }}
-        CC=musl-gcc ./configure \
-          --prefix=${{ env.SYSROOT }} \
-          --enable-static \
-          --disable-shared \
-          --without-xmlwf
-        make -j$(nproc)
-        make install
-
-    - name: build git
-      run: |
-        cd /tmp
-        wget -q https://www.kernel.org/pub/software/scm/git/git-${{ env.GIT_VER }}.tar.gz
-        tar xf git-${{ env.GIT_VER }}.tar.gz
-        cd git-${{ env.GIT_VER }}
-        make configure
-        export CC=musl-gcc
-        export CFLAGS="-I${{ env.SYSROOT }}/include"
-        export LDFLAGS="-L${{ env.SYSROOT }}/lib -static"
-        ./configure \
-          --prefix=/usr \
-          --without-tcltk \
-          --without-python \
-          --with-openssl=${{ env.SYSROOT }} \
-          --with-curl=${{ env.SYSROOT }} \
-          --with-expat=${{ env.SYSROOT }}
-        make -j$(nproc) \
-          CC=musl-gcc \
-          CFLAGS="-I${{ env.SYSROOT }}/include" \
-          LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
-          NO_GETTEXT=1 \
-          NO_PYTHON=1 \
-          NO_TCLTK=1 \
-          NO_PERL=1 \
-          NO_ICONV=1
-        make install \
-          CC=musl-gcc \
-          CFLAGS="-I${{ env.SYSROOT }}/include" \
-          LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
-          NO_GETTEXT=1 \
-          NO_PYTHON=1 \
-          NO_TCLTK=1 \
-          NO_PERL=1 \
-          NO_ICONV=1 \
-          DESTDIR=${{ env.SYSROOT }}
+          build-essential libncurses-dev musl-tools e2fsprogs
 
     - name: build busybox
       run: |
         cd /tmp
-        wget -q https://busybox.net/downloads/busybox-${{ env.BUSYBOX_VER }}.tar.bz2
+        wget -q --tries=3 \
+          "https://busybox.net/downloads/busybox-${{ env.BUSYBOX_VER }}.tar.bz2"
         tar xf busybox-${{ env.BUSYBOX_VER }}.tar.bz2
         cd busybox-${{ env.BUSYBOX_VER }}
         make defconfig
         scripts/config --enable  STATIC
         scripts/config --enable  NANO
-        scripts/config --enable  FEATURE_WGET_OPENSSL
         scripts/config --disable TC
         scripts/config --disable INETD
         scripts/config --disable FTPD
@@ -160,43 +44,23 @@ jobs:
     - name: assemble rootfs
       run: |
         R=${{ env.ROOTFS }}
-        S=${{ env.SYSROOT }}
 
         mkdir -p $R/{dev,proc,sys,tmp,run,root,home}
         mkdir -p $R/etc/init.d
-        mkdir -p $R/usr/{bin,sbin,libexec/git-core}
         mkdir -p $R/var/{log,run,tmp}
-        mkdir -p $R/lib
-        mkdir -p $R/etc/ssl/certs
-
-        strip --strip-all $S/bin/curl
-        cp $S/bin/curl $R/usr/bin/curl
-
-        cp $S/usr/bin/git $R/usr/bin/git
-        strip --strip-all $R/usr/bin/git 2>/dev/null || true
-
-        if [ -d "$S/usr/libexec/git-core" ]; then
-          find "$S/usr/libexec/git-core" -maxdepth 1 -type f | while read f; do
-            strip --strip-all "$f" 2>/dev/null || true
-            cp "$f" "$R/usr/libexec/git-core/"
-          done
-        fi
-
-        cp /etc/ssl/certs/ca-certificates.crt $R/etc/ssl/certs/ca-certificates.crt
-        ln -sf /etc/ssl/certs/ca-certificates.crt $R/etc/ssl/cert.pem
 
         printf '%s\n' '::sysinit:/etc/init.d/rcS'    > $R/etc/inittab
         printf '%s\n' '::askfirst:-/bin/sh'          >> $R/etc/inittab
         printf '%s\n' '::ctrlaltdel:/sbin/reboot'    >> $R/etc/inittab
         printf '%s\n' '::shutdown:/bin/umount -a -r' >> $R/etc/inittab
 
-        printf '#!/bin/sh\n'                                                  > $R/etc/init.d/rcS
-        printf 'mount -t proc none /proc\n'                                  >> $R/etc/init.d/rcS
-        printf 'mount -t sysfs none /sys\n'                                  >> $R/etc/init.d/rcS
-        printf 'mount -t devtmpfs none /dev 2>/dev/null || mdev -s\n'        >> $R/etc/init.d/rcS
-        printf 'hostname minimal\n'                                           >> $R/etc/init.d/rcS
-        printf 'ifconfig lo 127.0.0.1 up 2>/dev/null\n'                      >> $R/etc/init.d/rcS
-        printf 'echo "System ready"\n'                                        >> $R/etc/init.d/rcS
+        printf '#!/bin/sh\n'                                           > $R/etc/init.d/rcS
+        printf 'mount -t proc none /proc\n'                           >> $R/etc/init.d/rcS
+        printf 'mount -t sysfs none /sys\n'                           >> $R/etc/init.d/rcS
+        printf 'mount -t devtmpfs none /dev 2>/dev/null || mdev -s\n' >> $R/etc/init.d/rcS
+        printf 'hostname minimal\n'                                    >> $R/etc/init.d/rcS
+        printf 'ifconfig lo 127.0.0.1 up 2>/dev/null\n'               >> $R/etc/init.d/rcS
+        printf 'echo "Boot OK"\n'                                      >> $R/etc/init.d/rcS
         chmod +x $R/etc/init.d/rcS
 
         printf 'root:x:0:0:root:/root:/bin/sh\n' > $R/etc/passwd
@@ -204,21 +68,18 @@ jobs:
         printf 'root::0:::::\n'                  > $R/etc/shadow
         chmod 640 $R/etc/shadow
 
-        printf '127.0.0.1\tlocalhost minimal\n' > $R/etc/hosts
+        printf '127.0.0.1\tlocalhost minimal\n'           > $R/etc/hosts
         printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $R/etc/resolv.conf
-        printf 'minimal\n' > $R/etc/hostname
-
-        printf 'CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\n' > $R/etc/environment
-        printf 'GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt\n' >> $R/etc/environment
+        printf 'minimal\n'                                 > $R/etc/hostname
 
         chmod 1777 $R/tmp
 
     - name: create ext4 image
       run: |
-        dd if=/dev/zero of=/tmp/${{ env.IMAGE }} bs=1M count=${{ env.IMAGE_MB }}
+        dd if=/dev/zero of=/tmp/${{ env.IMAGE }} bs=1M count=1024
         mkfs.ext4 -L rootfs -d ${{ env.ROOTFS }} /tmp/${{ env.IMAGE }}
 
-    - name: verify image
+    - name: verify
       run: |
         ls -lh /tmp/${{ env.IMAGE }}
         e2fsck -f /tmp/${{ env.IMAGE }} || true
@@ -228,4 +89,5 @@ jobs:
       with:
         name: minimal-ext4
         path: /tmp/${{ env.IMAGE }}
+        
         
