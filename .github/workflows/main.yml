@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 
 env:
-  BUSYBOX_VERSION: "1.38.0"
   ARCH: x86_64
   JOBS: $(nproc)
 
@@ -30,11 +29,11 @@ jobs:
       - name: Download and extract BusyBox
         working-directory: ${{ github.workspace }}/build
         run: |
-          wget -q https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2 -O busybox.tar.bz2
+          wget -q https://busybox.net/downloads/busybox-1.38.0.tar.bz2 -O busybox.tar.bz2
           tar -xjf busybox.tar.bz2
 
       - name: Build BusyBox (dynamic, host glibc)
-        working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
+        working-directory: ${{ github.workspace }}/build/busybox-1.38.0
         run: |
           make defconfig
           sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
