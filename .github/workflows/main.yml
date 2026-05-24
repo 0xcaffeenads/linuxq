@@ -7,15 +7,11 @@ on:
 
 env:
   BUSYBOX_VERSION: "1.38.0"
-  GLIBC_VERSION: "2.39"
   CURL_VERSION: "8.12.1"
   GIT_VERSION: "2.49.0"
   NANO_VERSION: "8.4"
-  KERNEL_VERSION: "6.14.5"
   ARCH: x86_64
   JOBS: $(nproc)
-  DISK_SIZE: "1G"
-  ESP_SIZE: "100M"
 
 jobs:
   build:
@@ -32,57 +28,29 @@ jobs:
             gettext zlib1g-dev rsync bc texinfo \
             fakeroot cpio gzip xz-utils \
             libzstd-dev libpcre2-dev \
-            dosfstools grub-common grub-pc-bin \
-            grub-efi-amd64-bin mtools parted \
-            qemu-utils kpartx gawk
+            dosfstools parted mtools
 
       - name: Create workspace
-        run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,sysroot,mnt}
+        run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,mnt}
 
       - name: Download and extract sources
         working-directory: ${{ github.workspace }}/build
         run: |
           wget -q https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2 -O busybox.tar.bz2
-          wget -q https://ftp.gnu.org/gnu/glibc/glibc-${GLIBC_VERSION}.tar.xz -O glibc.tar.xz
           wget -q https://github.com/curl/curl/releases/download/curl-${CURL_VERSION//./_}/curl-${CURL_VERSION}.tar.gz -O curl.tar.gz
           wget -q https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz -O git.tar.gz
           wget -q https://www.nano-editor.org/dist/v8/nano-${NANO_VERSION}.tar.xz -O nano.tar.xz
-          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz -O linux.tar.xz
 
           tar -xjf busybox.tar.bz2
-          tar -xJf glibc.tar.xz
           tar -xzf curl.tar.gz
           tar -xzf git.tar.gz
           tar -xJf nano.tar.xz
-          tar -xJf linux.tar.xz
 
-      - name: Build glibc sysroot
-        working-directory: ${{ github.workspace }}/build
-        run: |
-          mkdir -p glibc-build && cd glibc-build
-          CFLAGS="-O2 -pipe" ../glibc-${GLIBC_VERSION}/configure \
-            --prefix=/usr \
-            --host=${ARCH}-linux-gnu \
-            --build=${ARCH}-linux-gnu \
-            --with-headers=/usr/include \
-            --disable-werror \
-            --disable-profile \
-            --disable-nscd \
-            --enable-kernel=5.15 \
-            libc_cv_forced_unwind=yes \
-            libc_cv_c_cleanup=yes
-          make -j${{ env.JOBS }}
-          make install DESTDIR=${{ github.workspace }}/sysroot
-          cd ..
-          ln -s ${{ github.workspace }}/sysroot/usr/include ${{ github.workspace }}/sysroot/include || true
-          ln -s ${{ github.workspace }}/sysroot/usr/lib ${{ github.workspace }}/sysroot/lib64 || true
-
-      - name: Build BusyBox (dynamic, glibc)
+      - name: Build BusyBox (dynamic, host glibc)
         working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
         run: |
           make defconfig
           sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
-          sed -i 's/.*CONFIG_SYSROOT.*/CONFIG_SYSROOT="${{ github.workspace }}/sysroot"/' .config
           sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
           sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
           sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
@@ -95,13 +63,10 @@ jobs:
         run: |
           ./configure \
             --prefix=/usr \
-            --host=${ARCH}-linux-gnu \
             --with-openssl \
             --disable-shared \
             --enable-static \
-            CC="gcc" \
-            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
-            LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
+            CC="gcc"
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
 
@@ -111,14 +76,12 @@ jobs:
           make configure
           ./configure \
             --prefix=/usr \
-            --host=${ARCH}-linux-gnu \
             --without-tcltk \
             --without-python \
             --without-expat \
             --with-curl \
             --with-openssl \
-            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
-            LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
+            CFLAGS="-O2"
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
 
@@ -127,35 +90,10 @@ jobs:
         run: |
           ./configure \
             --prefix=/usr \
-            --host=${ARCH}-linux-gnu \
             --disable-nls \
-            --disable-utf8 \
-            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
-            LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
+            --disable-utf8
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
-
-      - name: Build kernel
-        working-directory: ${{ github.workspace }}/build/linux-${KERNEL_VERSION}
-        run: |
-          make defconfig
-          sed -i 's/.*CONFIG_EFI_STUB.*/CONFIG_EFI_STUB=y/' .config
-          sed -i 's/.*CONFIG_EFI.*/CONFIG_EFI=y/' .config
-          sed -i 's/.*CONFIG_EFI_MIXED.*/CONFIG_EFI_MIXED=y/' .config
-          sed -i 's/.*CONFIG_EFI_VARS.*/CONFIG_EFI_VARS=y/' .config
-          sed -i 's/.*CONFIG_EFI_RUNTIME_MAP.*/CONFIG_EFI_RUNTIME_MAP=y/' .config
-          sed -i 's/.*CONFIG_FB_EFI.*/CONFIG_FB_EFI=y/' .config
-          sed -i 's/.*CONFIG_FRAMEBUFFER_CONSOLE.*/CONFIG_FRAMEBUFFER_CONSOLE=y/' .config
-          sed -i 's/.*CONFIG_VT.*/CONFIG_VT=y/' .config
-          sed -i 's/.*CONFIG_VGA_CONSOLE.*/CONFIG_VGA_CONSOLE=y/' .config
-          sed -i 's/.*CONFIG_SERIAL_8250.*/CONFIG_SERIAL_8250=y/' .config
-          sed -i 's/.*CONFIG_SERIAL_8250_CONSOLE.*/CONFIG_SERIAL_8250_CONSOLE=y/' .config
-          sed -i 's/.*CONFIG_EXT4_FS.*/CONFIG_EXT4_FS=y/' .config
-          sed -i 's/.*CONFIG_EXT4_USE_FOR_EXT2.*/CONFIG_EXT4_USE_FOR_EXT2=y/' .config
-          sed -i 's/.*CONFIG_BLK_DEV_INITRD.*/CONFIG_BLK_DEV_INITRD=n/' .config
-          sed -i 's/.*CONFIG_INITRAMFS_SOURCE.*/CONFIG_INITRAMFS_SOURCE=""/' .config
-          make -j${{ env.JOBS }}
-          cp arch/x86/boot/bzImage ${{ github.workspace }}/vmlinuz
 
       - name: Assemble rootfs
         working-directory: ${{ github.workspace }}/rootfs
@@ -179,7 +117,7 @@ jobs:
 
           cat << 'EOF'
 
-          Minimal Linux (BusyBox + glibc)
+          Minimal Linux (BusyBox init)
           Boot took $(cut -d' ' -f1 /proc/uptime) seconds
 
           EOF
@@ -225,94 +163,57 @@ jobs:
           nameserver 1.1.1.1
           EOFRESOLV
 
-          cp -a ${{ github.workspace }}/sysroot/lib/ld-linux-x86-64.so.2 lib64/
-          cp -a ${{ github.workspace }}/sysroot/lib/libc.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libm.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libdl.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libpthread.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libresolv.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libnss_dns.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/librt.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libcrypt.so* lib/
-          cp -a ${{ github.workspace }}/sysroot/lib/libutil.so* lib/
+          cp -a /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 lib64/
+          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
+          cp -a /lib/x86_64-linux-gnu/libm.so* lib/
+          cp -a /lib/x86_64-linux-gnu/libdl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libpthread.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libnss_dns.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/librt.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcrypt.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libutil.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libz.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libssl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcrypto.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libpcre2-8.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcurl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libnghttp2.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libidn2.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libunistring.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libpsl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libssh2.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libgssapi_krb5.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libkrb5.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libk5crypto.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcom_err.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libkrb5support.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libkeyutils.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libnsl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libtirpc.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libwrap.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libselinux.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libpcre.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libaudit.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcap.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
+          cp -a /lib/x86_64-linux-gnu/libexpat.so* lib/ || true
+          cp -a /usr/lib/x86_64-linux-gnu/libcurl.so* usr/lib/ || true
 
           ln -sf /bin/busybox linuxrc
 
-      - name: Create 1GB disk image with GPT + ESP + ext4
+      - name: Create 1GB ext4 disk image
         working-directory: ${{ github.workspace }}
         run: |
           dd if=/dev/zero of=disk.img bs=1M count=1024
-
           parted -s disk.img mklabel gpt
-          parted -s disk.img mkpart ESP fat32 1MiB 101MiB
-          parted -s disk.img set 1 esp on
-          parted -s disk.img mkpart rootfs ext4 101MiB 100%
-
+          parted -s disk.img mkpart rootfs ext4 1MiB 100%
           LOOPDEV=$(sudo losetup -f --show -P disk.img)
           sleep 1
-
-          sudo mkfs.fat -F32 -n EFI ${LOOPDEV}p1
-          sudo mkfs.ext4 -F -L rootfs ${LOOPDEV}p2
-
-          sudo mount ${LOOPDEV}p2 ${{ github.workspace }}/mnt
+          sudo mkfs.ext4 -F -L rootfs ${LOOPDEV}p1
+          sudo mount ${LOOPDEV}p1 ${{ github.workspace }}/mnt
           sudo cp -a ${{ github.workspace }}/rootfs/* ${{ github.workspace }}/mnt/
-          sudo mkdir -p ${{ github.workspace }}/mnt/boot
-          sudo cp ${{ github.workspace }}/vmlinuz ${{ github.workspace }}/mnt/boot/
-
-          sudo mkdir -p ${{ github.workspace }}/mnt/boot/efi
-          sudo mount ${LOOPDEV}p1 ${{ github.workspace }}/mnt/boot/efi
-
-          sudo mkdir -p ${{ github.workspace }}/mnt/boot/efi/EFI/boot
-
-          cat > ${{ github.workspace }}/grub.cfg << 'EOFGRUB'
-          set timeout=3
-          set default=0
-
-          menuentry "Minimal Linux" {
-            linux /vmlinuz root=/dev/sda2 rw console=tty0 console=ttyS0,115200n8
-            initrd /initrd.img
-          }
-          EOFGRUB
-
-          sudo grub-mkimage \
-            -o ${{ github.workspace }}/mnt/boot/efi/EFI/boot/bootx64.efi \
-            -O x86_64-efi \
-            -p /EFI/boot \
-            --modules="part_gpt fat ext2 search_fs_uuid search_label normal linux echo all_video gfxterm gfxmenu terminal" \
-            --fonts="" \
-            --themes="" \
-            --locales="" \
-            boot
-
-          cat > ${{ github.workspace }}/mnt/boot/efi/EFI/boot/grub.cfg << 'EOFGRUB2'
-          set timeout=3
-          set default=0
-
-          search --no-floppy --label rootfs --set=root
-
-          menuentry "Minimal Linux" {
-            linux /boot/vmlinuz root=/dev/sda2 rw console=tty0 console=ttyS0,115200n8
-          }
-          EOFGRUB2
-
-          sudo cp ${{ github.workspace }}/mnt/boot/efi/EFI/boot/grub.cfg ${{ github.workspace }}/mnt/boot/efi/EFI/boot/
-
-          sudo umount ${{ github.workspace }}/mnt/boot/efi
-          sudo umount ${{ github.workspace }}/mnt
-          sudo losetup -d ${LOOPDEV}
-
-      - name: Create cpio archive (initrd)
-        working-directory: ${{ github.workspace }}/rootfs
-        run: |
-          find . -print0 | fakeroot cpio --null -ov --format=newc | gzip -9 > ${{ github.workspace }}/initrd.img
-
-      - name: Inject initrd into disk image
-        working-directory: ${{ github.workspace }}
-        run: |
-          LOOPDEV=$(sudo losetup -f --show -P disk.img)
-          sleep 1
-          sudo mount ${LOOPDEV}p2 ${{ github.workspace }}/mnt
-          sudo cp ${{ github.workspace }}/initrd.img ${{ github.workspace }}/mnt/boot/
           sudo umount ${{ github.workspace }}/mnt
           sudo losetup -d ${LOOPDEV}
 
@@ -322,8 +223,5 @@ jobs:
           name: minimal-rootfs
           path: |
             ${{ github.workspace }}/disk.img
-            ${{ github.workspace }}/initrd.img
-            ${{ github.workspace }}/vmlinuz
             ${{ github.workspace }}/rootfs/
-          retention-days: 30
           
