@@ -148,4 +148,5 @@ jobs:
           path: |
             ${{ github.workspace }}/disk.img
             ${{ github.workspace }}/rootfs/
+          retention-days: 30
           
