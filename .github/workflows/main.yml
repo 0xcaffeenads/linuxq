@@ -5,10 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-env:
-  ARCH: x86_64
-  JOBS: $(nproc)
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,10 +14,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential libncurses-dev \
-            fakeroot cpio gzip xz-utils \
-            dosfstools parted mtools
+          sudo apt-get install -y build-essential libncurses-dev fakeroot cpio gzip xz-utils dosfstools parted mtools
 
       - name: Create workspace
         run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,mnt}
@@ -29,103 +22,55 @@ jobs:
       - name: Download and extract BusyBox
         working-directory: ${{ github.workspace }}/build
         run: |
-          wget -q https://busybox.net/downloads/busybox-1.38.0.tar.bz2 -O busybox.tar.bz2
-          tar -xjf busybox.tar.bz2
+          wget -q https://busybox.net/downloads/busybox-1.38.0.tar.bz2
+          tar -xjf busybox-1.38.0.tar.bz2
 
-      - name: Build BusyBox (dynamic, host glibc)
+      - name: Build BusyBox static
         working-directory: ${{ github.workspace }}/build/busybox-1.38.0
         run: |
           make defconfig
-          yes "" | make oldconfig
-          sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
-          sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_UTMP.*/CONFIG_FEATURE_UTMP=n/' .config
-          make -j${{ env.JOBS }}
-          make CONFIG_PREFIX=${{ github.workspace }}/rootfs install
+          sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=y/' .config
+          make -j$(nproc)
+          make CONFIG_PREFIX=$GITHUB_WORKSPACE/rootfs install
 
       - name: Assemble rootfs
         working-directory: ${{ github.workspace }}/rootfs
         run: |
-          mkdir -p dev proc sys tmp run etc/init.d usr/bin usr/sbin lib lib64 root boot
+          mkdir -p dev proc sys tmp run etc/init.d root
 
-          cat > init << 'EOFINIT'
+          cat > init << 'EOF'
           #!/bin/sh
           mount -t devtmpfs devtmpfs /dev
           mount -t proc none /proc
           mount -t sysfs none /sys
           mount -t tmpfs none /tmp
           mount -t tmpfs none /run
-
-          echo /sbin/mdev > /proc/sys/kernel/hotplug
           /sbin/mdev -s
-
           ip link set lo up
-          mkdir -p /dev/pts
-          mount -t devpts devpts /dev/pts
-
-          cat << 'EOF'
-
-          Minimal Linux (BusyBox init)
-          Boot took $(cut -d' ' -f1 /proc/uptime) seconds
-
-          EOF
-
           exec /bin/sh
-          EOFINIT
-
+          EOF
           chmod +x init
 
-          cat > etc/inittab << 'EOFTAB'
+          cat > etc/inittab << 'EOF'
           ::sysinit:/etc/init.d/rcS
           ::respawn:-/bin/sh
           ::ctrlaltdel:/sbin/reboot
-          ::shutdown:/sbin/swapoff -a
           ::shutdown:/bin/umount -a -r
-          EOFTAB
+          EOF
 
-          cat > etc/init.d/rcS << 'EOFRC'
+          cat > etc/init.d/rcS << 'EOF'
           #!/bin/sh
           mount -a
-          echo "rcS done"
-          EOFRC
+          EOF
           chmod +x etc/init.d/rcS
 
-          cat > etc/fstab << 'EOFFSTAB'
-          proc    /proc   proc    defaults        0       0
-          sysfs   /sys    sysfs   defaults        0       0
-          devtmpfs /dev   devtmpfs mode=0755      0       0
-          tmpfs   /tmp    tmpfs   mode=1777       0       0
-          tmpfs   /run    tmpfs   mode=0755       0       0
-          EOFFSTAB
-
-          cat > etc/passwd << 'EOFPASS'
-          root::0:0:root:/root:/bin/sh
-          EOFPASS
-
-          cat > etc/group << 'EOFGROUP'
-          root:x:0:
-          EOFGROUP
-
-          cat > etc/resolv.conf << 'EOFRESOLV'
-          nameserver 8.8.8.8
-          nameserver 1.1.1.1
-          EOFRESOLV
-
-          cp -a /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 lib64/
-          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
-          cp -a /lib/x86_64-linux-gnu/libm.so* lib/
-          cp -a /lib/x86_64-linux-gnu/libdl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libpthread.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libnss_dns.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/librt.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcrypt.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libutil.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libz.so* lib/ || true
-
-          ln -sf /bin/busybox linuxrc
+          cat > etc/fstab << 'EOF'
+          proc    /proc   proc    defaults    0    0
+          sysfs   /sys    sysfs   defaults    0    0
+          devtmpfs /dev   devtmpfs mode=0755  0    0
+          tmpfs   /tmp    tmpfs   mode=1777   0    0
+          tmpfs   /run    tmpfs   mode=0755   0    0
+          EOF
 
       - name: Create 1GB ext4 disk image
         working-directory: ${{ github.workspace }}
@@ -136,9 +81,9 @@ jobs:
           LOOPDEV=$(sudo losetup -f --show -P disk.img)
           sleep 1
           sudo mkfs.ext4 -F -L rootfs ${LOOPDEV}p1
-          sudo mount ${LOOPDEV}p1 ${{ github.workspace }}/mnt
-          sudo cp -a ${{ github.workspace }}/rootfs/* ${{ github.workspace }}/mnt/
-          sudo umount ${{ github.workspace }}/mnt
+          sudo mount ${LOOPDEV}p1 $GITHUB_WORKSPACE/mnt
+          sudo cp -a $GITHUB_WORKSPACE/rootfs/* $GITHUB_WORKSPACE/mnt/
+          sudo umount $GITHUB_WORKSPACE/mnt
           sudo losetup -d ${LOOPDEV}
 
       - name: Upload artifacts
@@ -148,5 +93,4 @@ jobs:
           path: |
             ${{ github.workspace }}/disk.img
             ${{ github.workspace }}/rootfs/
-          retention-days: 30
           
