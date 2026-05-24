@@ -36,6 +36,7 @@ jobs:
         working-directory: ${{ github.workspace }}/build/busybox-1.38.0
         run: |
           make defconfig
+          yes "" | make oldconfig
           sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
           sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
           sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
