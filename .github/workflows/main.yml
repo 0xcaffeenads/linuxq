@@ -30,6 +30,11 @@ jobs:
         run: |
           make defconfig
           sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=y/' .config
+          sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_UTMP.*/CONFIG_FEATURE_UTMP=n/' .config
+          yes "" | make oldconfig
           make -j$(nproc)
           make CONFIG_PREFIX=$GITHUB_WORKSPACE/rootfs install
 
@@ -93,4 +98,5 @@ jobs:
           path: |
             ${{ github.workspace }}/disk.img
             ${{ github.workspace }}/rootfs/
+          
           
