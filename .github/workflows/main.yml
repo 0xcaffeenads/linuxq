@@ -1,4 +1,4 @@
-name: build-minimal-ext4
+name: Build Minimal Rootfs
 
 on:
   push:
@@ -6,87 +6,146 @@ on:
   workflow_dispatch:
 
 env:
-  BUSYBOX_VER: "1.37.0"
-  ROOTFS: "/tmp/rootfs"
-  IMAGE: "rootfs.ext4"
+  BUSYBOX_VERSION: "1.38.0"
+  ARCH: x86_64
+  JOBS: $(nproc)
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-
+    runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
 
-    - name: install host packages
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends \
-          build-essential libncurses-dev musl-tools e2fsprogs
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses-dev \
+            fakeroot cpio gzip xz-utils \
+            dosfstools parted mtools
 
-    - name: build busybox
-      run: |
-        cd /tmp
-        wget -q --tries=3 \
-          "https://busybox.net/downloads/busybox-${{ env.BUSYBOX_VER }}.tar.bz2"
-        tar xf busybox-${{ env.BUSYBOX_VER }}.tar.bz2
-        cd busybox-${{ env.BUSYBOX_VER }}
-        make defconfig
-        echo 'CONFIG_STATIC=y'    >> .config
-        echo 'CONFIG_NANO=y'      >> .config
-        echo 'CONFIG_TC=n'        >> .config
-        echo 'CONFIG_INETD=n'     >> .config
-        echo 'CONFIG_FTPD=n'      >> .config
-        echo 'CONFIG_HTTPD=n'     >> .config
-        echo 'CONFIG_TELNETD=n'   >> .config
-        make olddefconfig
-        make CC=musl-gcc -j$(nproc)
-        make CC=musl-gcc CONFIG_PREFIX=${{ env.ROOTFS }} install
+      - name: Create workspace
+        run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,mnt}
 
-    - name: assemble rootfs
-      run: |
-        R=${{ env.ROOTFS }}
+      - name: Download and extract BusyBox
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          wget -q https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2 -O busybox.tar.bz2
+          tar -xjf busybox.tar.bz2
 
-        mkdir -p $R/{dev,proc,sys,tmp,run,root,home}
-        mkdir -p $R/etc/init.d
-        mkdir -p $R/var/{log,run,tmp}
+      - name: Build BusyBox (dynamic, host glibc)
+        working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
+        run: |
+          make defconfig
+          sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
+          sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
+          sed -i 's/.*CONFIG_FEATURE_UTMP.*/CONFIG_FEATURE_UTMP=n/' .config
+          make -j${{ env.JOBS }}
+          make CONFIG_PREFIX=${{ github.workspace }}/rootfs install
 
-        printf '%s\n' '::sysinit:/etc/init.d/rcS'    > $R/etc/inittab
-        printf '%s\n' '::askfirst:-/bin/sh'          >> $R/etc/inittab
-        printf '%s\n' '::ctrlaltdel:/sbin/reboot'    >> $R/etc/inittab
-        printf '%s\n' '::shutdown:/bin/umount -a -r' >> $R/etc/inittab
+      - name: Assemble rootfs
+        working-directory: ${{ github.workspace }}/rootfs
+        run: |
+          mkdir -p dev proc sys tmp run etc/init.d usr/bin usr/sbin lib lib64 root boot
 
-        printf '#!/bin/sh\n'                                           > $R/etc/init.d/rcS
-        printf 'mount -t proc none /proc\n'                           >> $R/etc/init.d/rcS
-        printf 'mount -t sysfs none /sys\n'                           >> $R/etc/init.d/rcS
-        printf 'mount -t devtmpfs none /dev 2>/dev/null || mdev -s\n' >> $R/etc/init.d/rcS
-        printf 'hostname minimal\n'                                    >> $R/etc/init.d/rcS
-        printf 'ifconfig lo 127.0.0.1 up 2>/dev/null\n'               >> $R/etc/init.d/rcS
-        printf 'echo "Boot OK"\n'                                      >> $R/etc/init.d/rcS
-        chmod +x $R/etc/init.d/rcS
+          cat > init << 'EOFINIT'
+          #!/bin/sh
+          mount -t devtmpfs devtmpfs /dev
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          mount -t tmpfs none /tmp
+          mount -t tmpfs none /run
 
-        printf 'root:x:0:0:root:/root:/bin/sh\n' > $R/etc/passwd
-        printf 'root:x:0:\n'                     > $R/etc/group
-        printf 'root::0:::::\n'                  > $R/etc/shadow
-        chmod 640 $R/etc/shadow
+          echo /sbin/mdev > /proc/sys/kernel/hotplug
+          /sbin/mdev -s
 
-        printf '127.0.0.1\tlocalhost minimal\n'           > $R/etc/hosts
-        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $R/etc/resolv.conf
-        printf 'minimal\n'                                 > $R/etc/hostname
+          ip link set lo up
+          mkdir -p /dev/pts
+          mount -t devpts devpts /dev/pts
 
-        chmod 1777 $R/tmp
+          cat << 'EOF'
 
-    - name: create ext4 image
-      run: |
-        dd if=/dev/zero of=/tmp/${{ env.IMAGE }} bs=1M count=1024
-        mkfs.ext4 -L rootfs -d ${{ env.ROOTFS }} /tmp/${{ env.IMAGE }}
+          Minimal Linux (BusyBox init)
+          Boot took $(cut -d' ' -f1 /proc/uptime) seconds
 
-    - name: verify
-      run: |
-        ls -lh /tmp/${{ env.IMAGE }}
-        e2fsck -f /tmp/${{ env.IMAGE }} || true
+          EOF
 
-    - name: upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: minimal-ext4
-        path: /tmp/${{ env.IMAGE }}
-        
+          exec /bin/sh
+          EOFINIT
+
+          chmod +x init
+
+          cat > etc/inittab << 'EOFTAB'
+          ::sysinit:/etc/init.d/rcS
+          ::respawn:-/bin/sh
+          ::ctrlaltdel:/sbin/reboot
+          ::shutdown:/sbin/swapoff -a
+          ::shutdown:/bin/umount -a -r
+          EOFTAB
+
+          cat > etc/init.d/rcS << 'EOFRC'
+          #!/bin/sh
+          mount -a
+          echo "rcS done"
+          EOFRC
+          chmod +x etc/init.d/rcS
+
+          cat > etc/fstab << 'EOFFSTAB'
+          proc    /proc   proc    defaults        0       0
+          sysfs   /sys    sysfs   defaults        0       0
+          devtmpfs /dev   devtmpfs mode=0755      0       0
+          tmpfs   /tmp    tmpfs   mode=1777       0       0
+          tmpfs   /run    tmpfs   mode=0755       0       0
+          EOFFSTAB
+
+          cat > etc/passwd << 'EOFPASS'
+          root::0:0:root:/root:/bin/sh
+          EOFPASS
+
+          cat > etc/group << 'EOFGROUP'
+          root:x:0:
+          EOFGROUP
+
+          cat > etc/resolv.conf << 'EOFRESOLV'
+          nameserver 8.8.8.8
+          nameserver 1.1.1.1
+          EOFRESOLV
+
+          cp -a /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 lib64/
+          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
+          cp -a /lib/x86_64-linux-gnu/libm.so* lib/
+          cp -a /lib/x86_64-linux-gnu/libdl.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libpthread.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libnss_dns.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/librt.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libcrypt.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libutil.so* lib/ || true
+          cp -a /lib/x86_64-linux-gnu/libz.so* lib/ || true
+
+          ln -sf /bin/busybox linuxrc
+
+      - name: Create 1GB ext4 disk image
+        working-directory: ${{ github.workspace }}
+        run: |
+          dd if=/dev/zero of=disk.img bs=1M count=1024
+          parted -s disk.img mklabel gpt
+          parted -s disk.img mkpart rootfs ext4 1MiB 100%
+          LOOPDEV=$(sudo losetup -f --show -P disk.img)
+          sleep 1
+          sudo mkfs.ext4 -F -L rootfs ${LOOPDEV}p1
+          sudo mount ${LOOPDEV}p1 ${{ github.workspace }}/mnt
+          sudo cp -a ${{ github.workspace }}/rootfs/* ${{ github.workspace }}/mnt/
+          sudo umount ${{ github.workspace }}/mnt
+          sudo losetup -d ${LOOPDEV}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimal-rootfs
+          path: |
+            ${{ github.workspace }}/disk.img
+            ${{ github.workspace }}/rootfs/
+          
