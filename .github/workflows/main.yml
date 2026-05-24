@@ -1,4 +1,4 @@
-name: Build Minimal Rootfs
+name: build-minimal-ext4
 
 on:
   push:
@@ -6,223 +6,226 @@ on:
   workflow_dispatch:
 
 env:
-  BUSYBOX_VERSION: "1.38.0"
-  CURL_VERSION: "8.12.1"
-  GIT_VERSION: "2.49.0"
-  NANO_VERSION: "8.4"
-  ARCH: x86_64
-  JOBS: $(nproc)
+  BUSYBOX_VER: "1.37.0"
+  ZLIB_VER: "1.3.1"
+  OPENSSL_VER: "3.3.2"
+  CURL_VER: "8.11.0"
+  EXPAT_VER: "2.6.4"
+  GIT_VER: "2.47.1"
+  SYSROOT: "/tmp/sysroot"
+  ROOTFS: "/tmp/rootfs"
+  IMAGE: "rootfs.ext4"
+  IMAGE_MB: "256"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
     steps:
-      - uses: actions/checkout@v4
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bison flex libncurses-dev \
-            libssl-dev libcurl4-openssl-dev libexpat1-dev \
-            gettext zlib1g-dev rsync bc texinfo \
-            fakeroot cpio gzip xz-utils \
-            libzstd-dev libpcre2-dev \
-            dosfstools parted mtools
+    - name: install host packages
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          build-essential libncurses-dev bison flex autoconf automake \
+          libtool pkg-config libelf-dev bc cpio xz-utils \
+          e2fsprogs musl-tools gettext perl
 
-      - name: Create workspace
-        run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,mnt}
+    - name: create build directories
+      run: |
+        mkdir -p ${{ env.SYSROOT }}/{include,lib,bin,share}
+        mkdir -p ${{ env.ROOTFS }}
 
-      - name: Download and extract sources
-        working-directory: ${{ github.workspace }}/build
-        run: |
-          wget -q https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2 -O busybox.tar.bz2
-          wget -q https://github.com/curl/curl/releases/download/curl-${CURL_VERSION//./_}/curl-${CURL_VERSION}.tar.gz -O curl.tar.gz
-          wget -q https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz -O git.tar.gz
-          wget -q https://www.nano-editor.org/dist/v8/nano-${NANO_VERSION}.tar.xz -O nano.tar.xz
+    - name: build zlib
+      run: |
+        cd /tmp
+        wget -q https://zlib.net/zlib-${{ env.ZLIB_VER }}.tar.gz
+        tar xf zlib-${{ env.ZLIB_VER }}.tar.gz
+        cd zlib-${{ env.ZLIB_VER }}
+        CC=musl-gcc ./configure --prefix=${{ env.SYSROOT }} --static
+        make -j$(nproc)
+        make install
 
-          tar -xjf busybox.tar.bz2
-          tar -xzf curl.tar.gz
-          tar -xzf git.tar.gz
-          tar -xJf nano.tar.xz
+    - name: build openssl
+      run: |
+        cd /tmp
+        wget -q https://www.openssl.org/source/openssl-${{ env.OPENSSL_VER }}.tar.gz
+        tar xf openssl-${{ env.OPENSSL_VER }}.tar.gz
+        cd openssl-${{ env.OPENSSL_VER }}
+        CC=musl-gcc ./Configure linux-x86_64 \
+          --prefix=${{ env.SYSROOT }} \
+          --openssldir=/etc/ssl \
+          no-shared no-tests no-ui-console \
+          -I${{ env.SYSROOT }}/include \
+          -L${{ env.SYSROOT }}/lib
+        make -j$(nproc)
+        make install_sw
 
-      - name: Build BusyBox (dynamic, host glibc)
-        working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
-        run: |
-          make defconfig
-          sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
-          sed -i 's/.*CONFIG_INETD.*/CONFIG_INETD=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_INETD_SUPPORT.*/CONFIG_FEATURE_INETD_SUPPORT=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_WTMP.*/CONFIG_FEATURE_WTMP=n/' .config
-          sed -i 's/.*CONFIG_FEATURE_UTMP.*/CONFIG_FEATURE_UTMP=n/' .config
-          make -j${{ env.JOBS }}
-          make CONFIG_PREFIX=${{ github.workspace }}/rootfs install
+    - name: build curl
+      run: |
+        cd /tmp
+        wget -q https://curl.se/download/curl-${{ env.CURL_VER }}.tar.gz
+        tar xf curl-${{ env.CURL_VER }}.tar.gz
+        cd curl-${{ env.CURL_VER }}
+        CC=musl-gcc \
+        CFLAGS="-I${{ env.SYSROOT }}/include" \
+        LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
+        PKG_CONFIG_PATH="${{ env.SYSROOT }}/lib/pkgconfig" \
+        ./configure \
+          --prefix=${{ env.SYSROOT }} \
+          --enable-static \
+          --disable-shared \
+          --with-openssl=${{ env.SYSROOT }} \
+          --without-libpsl \
+          --without-libidn2 \
+          --without-brotli \
+          --without-zstd \
+          --without-nghttp2 \
+          --disable-ldap \
+          --disable-manual
+        make -j$(nproc)
+        make install
 
-      - name: Build curl
-        working-directory: ${{ github.workspace }}/build/curl-${CURL_VERSION}
-        run: |
-          ./configure \
-            --prefix=/usr \
-            --with-openssl \
-            --disable-shared \
-            --enable-static \
-            CC="gcc"
-          make -j${{ env.JOBS }}
-          make install DESTDIR=${{ github.workspace }}/rootfs
+    - name: build expat
+      run: |
+        cd /tmp
+        ETAG=$(echo "${{ env.EXPAT_VER }}" | tr '.' '_')
+        wget -q "https://github.com/libexpat/libexpat/releases/download/R_${ETAG}/expat-${{ env.EXPAT_VER }}.tar.gz"
+        tar xf expat-${{ env.EXPAT_VER }}.tar.gz
+        cd expat-${{ env.EXPAT_VER }}
+        CC=musl-gcc ./configure \
+          --prefix=${{ env.SYSROOT }} \
+          --enable-static \
+          --disable-shared \
+          --without-xmlwf
+        make -j$(nproc)
+        make install
 
-      - name: Build git
-        working-directory: ${{ github.workspace }}/build/git-${GIT_VERSION}
-        run: |
-          make configure
-          ./configure \
-            --prefix=/usr \
-            --without-tcltk \
-            --without-python \
-            --without-expat \
-            --with-curl \
-            --with-openssl \
-            CFLAGS="-O2"
-          make -j${{ env.JOBS }}
-          make install DESTDIR=${{ github.workspace }}/rootfs
+    - name: build git
+      run: |
+        cd /tmp
+        wget -q https://www.kernel.org/pub/software/scm/git/git-${{ env.GIT_VER }}.tar.gz
+        tar xf git-${{ env.GIT_VER }}.tar.gz
+        cd git-${{ env.GIT_VER }}
+        make configure
+        export CC=musl-gcc
+        export CFLAGS="-I${{ env.SYSROOT }}/include"
+        export LDFLAGS="-L${{ env.SYSROOT }}/lib -static"
+        ./configure \
+          --prefix=/usr \
+          --without-tcltk \
+          --without-python \
+          --with-openssl=${{ env.SYSROOT }} \
+          --with-curl=${{ env.SYSROOT }} \
+          --with-expat=${{ env.SYSROOT }}
+        make -j$(nproc) \
+          CC=musl-gcc \
+          CFLAGS="-I${{ env.SYSROOT }}/include" \
+          LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
+          NO_GETTEXT=1 \
+          NO_PYTHON=1 \
+          NO_TCLTK=1 \
+          NO_PERL=1 \
+          NO_ICONV=1
+        make install \
+          CC=musl-gcc \
+          CFLAGS="-I${{ env.SYSROOT }}/include" \
+          LDFLAGS="-L${{ env.SYSROOT }}/lib -static" \
+          NO_GETTEXT=1 \
+          NO_PYTHON=1 \
+          NO_TCLTK=1 \
+          NO_PERL=1 \
+          NO_ICONV=1 \
+          DESTDIR=${{ env.SYSROOT }}
 
-      - name: Build nano
-        working-directory: ${{ github.workspace }}/build/nano-${NANO_VERSION}
-        run: |
-          ./configure \
-            --prefix=/usr \
-            --disable-nls \
-            --disable-utf8
-          make -j${{ env.JOBS }}
-          make install DESTDIR=${{ github.workspace }}/rootfs
+    - name: build busybox
+      run: |
+        cd /tmp
+        wget -q https://busybox.net/downloads/busybox-${{ env.BUSYBOX_VER }}.tar.bz2
+        tar xf busybox-${{ env.BUSYBOX_VER }}.tar.bz2
+        cd busybox-${{ env.BUSYBOX_VER }}
+        make defconfig
+        scripts/config --enable  STATIC
+        scripts/config --enable  NANO
+        scripts/config --enable  FEATURE_WGET_OPENSSL
+        scripts/config --disable TC
+        scripts/config --disable INETD
+        scripts/config --disable FTPD
+        scripts/config --disable HTTPD
+        scripts/config --disable TELNETD
+        make olddefconfig
+        make CC=musl-gcc -j$(nproc)
+        make CC=musl-gcc CONFIG_PREFIX=${{ env.ROOTFS }} install
 
-      - name: Assemble rootfs
-        working-directory: ${{ github.workspace }}/rootfs
-        run: |
-          mkdir -p dev proc sys tmp run etc/init.d usr/bin usr/sbin lib lib64 root boot
+    - name: assemble rootfs
+      run: |
+        R=${{ env.ROOTFS }}
+        S=${{ env.SYSROOT }}
 
-          cat > init << 'EOFINIT'
-          #!/bin/sh
-          mount -t devtmpfs devtmpfs /dev
-          mount -t proc none /proc
-          mount -t sysfs none /sys
-          mount -t tmpfs none /tmp
-          mount -t tmpfs none /run
+        mkdir -p $R/{dev,proc,sys,tmp,run,root,home}
+        mkdir -p $R/etc/init.d
+        mkdir -p $R/usr/{bin,sbin,libexec/git-core}
+        mkdir -p $R/var/{log,run,tmp}
+        mkdir -p $R/lib
+        mkdir -p $R/etc/ssl/certs
 
-          echo /sbin/mdev > /proc/sys/kernel/hotplug
-          /sbin/mdev -s
+        strip --strip-all $S/bin/curl
+        cp $S/bin/curl $R/usr/bin/curl
 
-          ip link set lo up
-          mkdir -p /dev/pts
-          mount -t devpts devpts /dev/pts
+        cp $S/usr/bin/git $R/usr/bin/git
+        strip --strip-all $R/usr/bin/git 2>/dev/null || true
 
-          cat << 'EOF'
+        if [ -d "$S/usr/libexec/git-core" ]; then
+          find "$S/usr/libexec/git-core" -maxdepth 1 -type f | while read f; do
+            strip --strip-all "$f" 2>/dev/null || true
+            cp "$f" "$R/usr/libexec/git-core/"
+          done
+        fi
 
-          Minimal Linux (BusyBox init)
-          Boot took $(cut -d' ' -f1 /proc/uptime) seconds
+        cp /etc/ssl/certs/ca-certificates.crt $R/etc/ssl/certs/ca-certificates.crt
+        ln -sf /etc/ssl/certs/ca-certificates.crt $R/etc/ssl/cert.pem
 
-          EOF
+        printf '%s\n' '::sysinit:/etc/init.d/rcS'    > $R/etc/inittab
+        printf '%s\n' '::askfirst:-/bin/sh'          >> $R/etc/inittab
+        printf '%s\n' '::ctrlaltdel:/sbin/reboot'    >> $R/etc/inittab
+        printf '%s\n' '::shutdown:/bin/umount -a -r' >> $R/etc/inittab
 
-          exec /bin/sh
-          EOFINIT
+        printf '#!/bin/sh\n'                                                  > $R/etc/init.d/rcS
+        printf 'mount -t proc none /proc\n'                                  >> $R/etc/init.d/rcS
+        printf 'mount -t sysfs none /sys\n'                                  >> $R/etc/init.d/rcS
+        printf 'mount -t devtmpfs none /dev 2>/dev/null || mdev -s\n'        >> $R/etc/init.d/rcS
+        printf 'hostname minimal\n'                                           >> $R/etc/init.d/rcS
+        printf 'ifconfig lo 127.0.0.1 up 2>/dev/null\n'                      >> $R/etc/init.d/rcS
+        printf 'echo "System ready"\n'                                        >> $R/etc/init.d/rcS
+        chmod +x $R/etc/init.d/rcS
 
-          chmod +x init
+        printf 'root:x:0:0:root:/root:/bin/sh\n' > $R/etc/passwd
+        printf 'root:x:0:\n'                     > $R/etc/group
+        printf 'root::0:::::\n'                  > $R/etc/shadow
+        chmod 640 $R/etc/shadow
 
-          cat > etc/inittab << 'EOFTAB'
-          ::sysinit:/etc/init.d/rcS
-          ::respawn:-/bin/sh
-          ::ctrlaltdel:/sbin/reboot
-          ::shutdown:/sbin/swapoff -a
-          ::shutdown:/bin/umount -a -r
-          EOFTAB
+        printf '127.0.0.1\tlocalhost minimal\n' > $R/etc/hosts
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $R/etc/resolv.conf
+        printf 'minimal\n' > $R/etc/hostname
 
-          cat > etc/init.d/rcS << 'EOFRC'
-          #!/bin/sh
-          mount -a
-          echo "rcS done"
-          EOFRC
-          chmod +x etc/init.d/rcS
+        printf 'CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\n' > $R/etc/environment
+        printf 'GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt\n' >> $R/etc/environment
 
-          cat > etc/fstab << 'EOFFSTAB'
-          proc    /proc   proc    defaults        0       0
-          sysfs   /sys    sysfs   defaults        0       0
-          devtmpfs /dev   devtmpfs mode=0755      0       0
-          tmpfs   /tmp    tmpfs   mode=1777       0       0
-          tmpfs   /run    tmpfs   mode=0755       0       0
-          EOFFSTAB
+        chmod 1777 $R/tmp
 
-          cat > etc/passwd << 'EOFPASS'
-          root::0:0:root:/root:/bin/sh
-          EOFPASS
+    - name: create ext4 image
+      run: |
+        dd if=/dev/zero of=/tmp/${{ env.IMAGE }} bs=1M count=${{ env.IMAGE_MB }}
+        mkfs.ext4 -L rootfs -d ${{ env.ROOTFS }} /tmp/${{ env.IMAGE }}
 
-          cat > etc/group << 'EOFGROUP'
-          root:x:0:
-          EOFGROUP
+    - name: verify image
+      run: |
+        ls -lh /tmp/${{ env.IMAGE }}
+        e2fsck -f /tmp/${{ env.IMAGE }} || true
 
-          cat > etc/resolv.conf << 'EOFRESOLV'
-          nameserver 8.8.8.8
-          nameserver 1.1.1.1
-          EOFRESOLV
-
-          cp -a /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 lib64/
-          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
-          cp -a /lib/x86_64-linux-gnu/libm.so* lib/
-          cp -a /lib/x86_64-linux-gnu/libdl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libpthread.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libnss_dns.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/librt.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcrypt.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libutil.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libz.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libssl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcrypto.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libpcre2-8.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcurl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libnghttp2.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libidn2.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libunistring.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libpsl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libssh2.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libgssapi_krb5.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libkrb5.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libk5crypto.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcom_err.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libkrb5support.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libkeyutils.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libresolv.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libnsl.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libtirpc.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libwrap.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libselinux.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libpcre.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libaudit.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libcap.so* lib/ || true
-          cp -a /lib/x86_64-linux-gnu/libc.so* lib/
-          cp -a /lib/x86_64-linux-gnu/libexpat.so* lib/ || true
-          cp -a /usr/lib/x86_64-linux-gnu/libcurl.so* usr/lib/ || true
-
-          ln -sf /bin/busybox linuxrc
-
-      - name: Create 1GB ext4 disk image
-        working-directory: ${{ github.workspace }}
-        run: |
-          dd if=/dev/zero of=disk.img bs=1M count=1024
-          parted -s disk.img mklabel gpt
-          parted -s disk.img mkpart rootfs ext4 1MiB 100%
-          LOOPDEV=$(sudo losetup -f --show -P disk.img)
-          sleep 1
-          sudo mkfs.ext4 -F -L rootfs ${LOOPDEV}p1
-          sudo mount ${LOOPDEV}p1 ${{ github.workspace }}/mnt
-          sudo cp -a ${{ github.workspace }}/rootfs/* ${{ github.workspace }}/mnt/
-          sudo umount ${{ github.workspace }}/mnt
-          sudo losetup -d ${LOOPDEV}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: minimal-rootfs
-          path: |
-            ${{ github.workspace }}/disk.img
-            ${{ github.workspace }}/rootfs/
-          
-          
+    - name: upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: minimal-ext4
+        path: /tmp/${{ env.IMAGE }}
+        
