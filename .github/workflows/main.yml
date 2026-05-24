@@ -7,7 +7,7 @@ on:
 
 env:
   BUSYBOX_VERSION: "1.38.0"
-  GLIBC_VERSION: "2.43"
+  GLIBC_VERSION: "2.39"
   CURL_VERSION: "8.12.1"
   GIT_VERSION: "2.49.0"
   NANO_VERSION: "8.4"
@@ -34,7 +34,7 @@ jobs:
             libzstd-dev libpcre2-dev \
             dosfstools grub-common grub-pc-bin \
             grub-efi-amd64-bin mtools parted \
-            qemu-utils kpartx
+            qemu-utils kpartx gawk
 
       - name: Create workspace
         run: mkdir -p $GITHUB_WORKSPACE/{build,rootfs,sysroot,mnt}
@@ -60,22 +60,22 @@ jobs:
         working-directory: ${{ github.workspace }}/build
         run: |
           mkdir -p glibc-build && cd glibc-build
-          ../glibc-${GLIBC_VERSION}/configure \
+          CFLAGS="-O2 -pipe" ../glibc-${GLIBC_VERSION}/configure \
             --prefix=/usr \
             --host=${ARCH}-linux-gnu \
             --build=${ARCH}-linux-gnu \
             --with-headers=/usr/include \
             --disable-werror \
-            --disable-sanity-checks \
+            --disable-profile \
+            --disable-nscd \
             --enable-kernel=5.15 \
-            --enable-add-ons \
             libc_cv_forced_unwind=yes \
             libc_cv_c_cleanup=yes
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/sysroot
           cd ..
-          ln -s ${{ github.workspace }}/sysroot/usr/include ${{ github.workspace }}/sysroot/include
-          ln -s ${{ github.workspace }}/sysroot/usr/lib ${{ github.workspace }}/sysroot/lib64
+          ln -s ${{ github.workspace }}/sysroot/usr/include ${{ github.workspace }}/sysroot/include || true
+          ln -s ${{ github.workspace }}/sysroot/usr/lib ${{ github.workspace }}/sysroot/lib64 || true
 
       - name: Build BusyBox (dynamic, glibc)
         working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
@@ -100,7 +100,7 @@ jobs:
             --disable-shared \
             --enable-static \
             CC="gcc" \
-            CFLAGS="-I${{ github.workspace }}/sysroot/usr/include" \
+            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
             LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
@@ -117,7 +117,7 @@ jobs:
             --without-expat \
             --with-curl \
             --with-openssl \
-            CFLAGS="-I${{ github.workspace }}/sysroot/usr/include" \
+            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
             LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
@@ -130,7 +130,7 @@ jobs:
             --host=${ARCH}-linux-gnu \
             --disable-nls \
             --disable-utf8 \
-            CFLAGS="-I${{ github.workspace }}/sysroot/usr/include" \
+            CFLAGS="-O2 -I${{ github.workspace }}/sysroot/usr/include" \
             LDFLAGS="-L${{ github.workspace }}/sysroot/usr/lib"
           make -j${{ env.JOBS }}
           make install DESTDIR=${{ github.workspace }}/rootfs
@@ -325,5 +325,5 @@ jobs:
             ${{ github.workspace }}/initrd.img
             ${{ github.workspace }}/vmlinuz
             ${{ github.workspace }}/rootfs/
-          
+          retention-days: 30
           
