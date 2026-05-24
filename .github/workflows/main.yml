@@ -30,13 +30,13 @@ jobs:
         tar xf busybox-${{ env.BUSYBOX_VER }}.tar.bz2
         cd busybox-${{ env.BUSYBOX_VER }}
         make defconfig
-        scripts/config --enable  STATIC
-        scripts/config --enable  NANO
-        scripts/config --disable TC
-        scripts/config --disable INETD
-        scripts/config --disable FTPD
-        scripts/config --disable HTTPD
-        scripts/config --disable TELNETD
+        echo 'CONFIG_STATIC=y'    >> .config
+        echo 'CONFIG_NANO=y'      >> .config
+        echo 'CONFIG_TC=n'        >> .config
+        echo 'CONFIG_INETD=n'     >> .config
+        echo 'CONFIG_FTPD=n'      >> .config
+        echo 'CONFIG_HTTPD=n'     >> .config
+        echo 'CONFIG_TELNETD=n'   >> .config
         make olddefconfig
         make CC=musl-gcc -j$(nproc)
         make CC=musl-gcc CONFIG_PREFIX=${{ env.ROOTFS }} install
@@ -89,5 +89,4 @@ jobs:
       with:
         name: minimal-ext4
         path: /tmp/${{ env.IMAGE }}
-        
         
