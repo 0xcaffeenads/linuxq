@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
 
 env:
-  BUSYBOX_VERSION: "1_38_0"
+  BUSYBOX_VERSION: "1.38.0"
   GLIBC_VERSION: "2.43"
-  CURL_VERSION: "8.20.0"
-  GIT_VERSION: "2.52.0"
+  CURL_VERSION: "8.12.1"
+  GIT_VERSION: "2.49.0"
   NANO_VERSION: "8.4"
-  KERNEL_VERSION: "6.14"
+  KERNEL_VERSION: "6.14.5"
   ARCH: x86_64
   JOBS: $(nproc)
   DISK_SIZE: "1G"
@@ -42,14 +42,14 @@ jobs:
       - name: Download and extract sources
         working-directory: ${{ github.workspace }}/build
         run: |
-          wget -q https://github.com/mirror/busybox/archive/refs/tags/${BUSYBOX_VERSION}.tar.gz -O busybox.tar.gz
+          wget -q https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2 -O busybox.tar.bz2
           wget -q https://ftp.gnu.org/gnu/glibc/glibc-${GLIBC_VERSION}.tar.xz -O glibc.tar.xz
           wget -q https://github.com/curl/curl/releases/download/curl-${CURL_VERSION//./_}/curl-${CURL_VERSION}.tar.gz -O curl.tar.gz
           wget -q https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz -O git.tar.gz
-          wget -q https://www.nano-editor.org/dist/v8/nano-${NANO_VERSION}.tar.xz -O nano.tar.gz
+          wget -q https://www.nano-editor.org/dist/v8/nano-${NANO_VERSION}.tar.xz -O nano.tar.xz
           wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz -O linux.tar.xz
 
-          tar -xzf busybox.tar.gz
+          tar -xjf busybox.tar.bz2
           tar -xJf glibc.tar.xz
           tar -xzf curl.tar.gz
           tar -xzf git.tar.gz
@@ -78,7 +78,7 @@ jobs:
           ln -s ${{ github.workspace }}/sysroot/usr/lib ${{ github.workspace }}/sysroot/lib64
 
       - name: Build BusyBox (dynamic, glibc)
-        working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION//_/.}
+        working-directory: ${{ github.workspace }}/build/busybox-${BUSYBOX_VERSION}
         run: |
           make defconfig
           sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=n/' .config
@@ -325,4 +325,5 @@ jobs:
             ${{ github.workspace }}/initrd.img
             ${{ github.workspace }}/vmlinuz
             ${{ github.workspace }}/rootfs/
+          
           
