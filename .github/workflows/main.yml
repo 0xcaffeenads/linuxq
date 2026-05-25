@@ -1,84 +1,89 @@
-name: Minimal Linux Build (QEMU + Busybox + init)
+# .github/workflows/build-kernel-aarch64.yml
+name: Build ARM64 Kernel
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  build-busybox-linux:
+  build-aarch64:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    
     steps:
-      - name: Checkout empty repo (optional)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install cross-compilation toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git gcc make bc bison flex libssl-dev libelf-dev qemu-system-x86 wget cpio
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            xz-utils \
+            wget
 
-      - name: Download Linux kernel (lts)
-        run: |
-          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.93.tar.xz
-          tar -xf linux-6.1.93.tar.xz
+      - name: Kernel cache
+        uses: actions/cache@v4
+        with:
+          path: linux-*.tar.xz
+          key: kernel-6.7-tarball
 
-      - name: Default kernel config
-        working-directory: linux-6.1.93
-        run: make defconfig
+      - name: Download kernel source
+        run: |
+          KVER="6.7"
+          if [ ! -f linux-${KVER}.tar.xz ]; then
+            wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KVER}.tar.xz
+          fi
 
-      - name: Minimal kernel options (initramfs support)
-        working-directory: linux-6.1.93
+      - name: Extract kernel source
         run: |
-          scripts/config --enable BLK_DEV_INITRD
-          scripts/config --enable RD_GZIP
-          scripts/config --enable DEVTMPFS
-          scripts/config --enable DEVTMPFS_MOUNT
-          yes '' | make olddefconfig
+          KVER="6.7"
+          KDIR="linux-$KVER"
+          rm -rf $KDIR
+          XZ_OPT="-T0" tar -xf linux-${KVER}.tar.xz
 
-      - name: Download and build BusyBox (static)
+      - name: Configure and build kernel
+        working-directory: linux-6.7
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-gnu-
+          MAKEFLAGS: "-j$(nproc)"
+          KCFLAGS: "-O2"
+          KBUILD_BUILD_TIMESTAMP: ""
+          KBUILD_BUILD_USER: "miko"
         run: |
-          wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          tar -xf busybox-1.36.1.tar.bz2
-          cd busybox-1.36.1
-          make defconfig
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          make -j$(nproc)
-          make install
-        
-      - name: Prepare initramfs (init + busybox)
-        run: |
-          mkdir -p initramfs/{bin,sbin,etc,proc,sys,usr/bin,usr/sbin,dev}
-          cp -a busybox-1.36.1/_install/* initramfs/
-          cat > initramfs/init << 'EOF'
-          #!/bin/sh
-          mount -t proc proc /proc
-          mount -t sysfs sys /sys
-          mount -t devtmpfs dev /dev
-          echo
-          echo "=== Minimal Linux Booted via GitHub Actions ==="
-          echo
-          /bin/sh
-          EOF
-          chmod +x initramfs/init
-          cd initramfs
-          find . | cpio -H newc -o | gzip > ../initramfs.img.gz
-          cd ..
-        
-      - name: Build the kernel with built-in initramfs
-        working-directory: linux-6.1.93
-        run: |
-          cp ../initramfs.img.gz .
-          sed -i '/CONFIG_INITRAMFS_SOURCE=/d' .config
-          echo 'CONFIG_INITRAMFS_SOURCE="initramfs.img.gz"' >> .config
-          yes '' | make olddefconfig
-          make -j$(nproc)
-        
-      - name: Boot with QEMU (headless, smoke test)
-        run: |
-          cd linux-6.1.93
-          qemu-system-x86_64 -kernel arch/x86/boot/bzImage -m 256M \
-          -nographic -no-reboot -append "console=ttyS0" \
-          || true
+          
+          make ARCH=arm64 defconfig
+          make ARCH=arm64 olddefconfig
+          
+          
+          scripts/config \
+            -e CONFIG_EXT4_FS \
+            -e CONFIG_PROC_FS \
+            -e CONFIG_SYSFS \
+            -e CONFIG_DEVTMPFS \
+            -e CONFIG_DEVTMPFS_MOUNT \
+            -e CONFIG_NET \
+            -e CONFIG_INET \
+            -e CONFIG_VIRTIO \
+            -e CONFIG_VIRTIO_PCI \
+            -e CONFIG_VIRTIO_BLK \
+            -e CONFIG_SMP \
+            -e CONFIG_TMPFS \
+            -e CONFIG_UNIX
+          
+          
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+      - name: Upload kernel image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-aarch64-Image
+          path: linux-6.7/arch/arm64/boot/Image
           
