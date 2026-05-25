@@ -9,81 +9,83 @@ on:
 jobs:
   build-aarch64:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cross-compilation toolchain
+      - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            xz-utils \
-            wget
+            bc bison flex \
+            libssl-dev libelf-dev \
+            xz-utils wget cpio
 
-      - name: Kernel cache
+      - name: Cache kernel tarball
         uses: actions/cache@v4
         with:
-          path: linux-*.tar.xz
-          key: kernel-6.7-tarball
+          path: linux-6.7.tar.xz
+          key: kernel-6.7
 
-      - name: Download kernel source
+      - name: Download kernel
         run: |
-          KVER="6.7"
-          if [ ! -f linux-${KVER}.tar.xz ]; then
-            wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KVER}.tar.xz
+          if [ ! -f linux-6.7.tar.xz ]; then
+            wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.7.tar.xz
           fi
 
-      - name: Extract kernel source
+      - name: Extract
         run: |
-          KVER="6.7"
-          KDIR="linux-$KVER"
-          rm -rf $KDIR
-          XZ_OPT="-T0" tar -xf linux-${KVER}.tar.xz
+          rm -rf linux-6.7
+          XZ_OPT="-T0" tar -xf linux-6.7.tar.xz
 
-      - name: Configure and build kernel
+      - name: Configure
         working-directory: linux-6.7
         env:
           ARCH: arm64
           CROSS_COMPILE: aarch64-linux-gnu-
-          MAKEFLAGS: "-j$(nproc)"
-          KCFLAGS: "-O2"
-          KBUILD_BUILD_TIMESTAMP: ""
-          KBUILD_BUILD_USER: "miko"
         run: |
-          
-          make ARCH=arm64 defconfig
-          make ARCH=arm64 olddefconfig
-          
-          
+          make defconfig
+          make olddefconfig
+
           scripts/config \
             -e CONFIG_EXT4_FS \
             -e CONFIG_PROC_FS \
             -e CONFIG_SYSFS \
+            -e CONFIG_TMPFS \
+            -e CONFIG_TMPFS_POSIX_ACL \
             -e CONFIG_DEVTMPFS \
             -e CONFIG_DEVTMPFS_MOUNT \
+            -e CONFIG_BLK_DEV_INITRD \
             -e CONFIG_NET \
             -e CONFIG_INET \
+            -e CONFIG_PACKET \
+            -e CONFIG_UNIX \
             -e CONFIG_VIRTIO \
             -e CONFIG_VIRTIO_PCI \
             -e CONFIG_VIRTIO_BLK \
-            -e CONFIG_SMP \
-            -e CONFIG_TMPFS \
-            -e CONFIG_UNIX
-          
-          
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+            -e CONFIG_VIRTIO_NET \
+            -e CONFIG_NETDEVICES \
+            -e CONFIG_9P_FS \
+            -e CONFIG_NET_9P \
+            -e CONFIG_NET_9P_VIRTIO
 
-      - name: Upload kernel image
+          make olddefconfig
+
+      - name: Build kernel
+        working-directory: linux-6.7
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: |
+          make -j$(nproc)
+
+      - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-aarch64-Image
-          path: linux-6.7/arch/arm64/boot/Image
-          
+          name: kernel-aarch64
+          path: |
+            linux-6.7/arch/arm64/boot/Image
+            linux-6.7/.config
