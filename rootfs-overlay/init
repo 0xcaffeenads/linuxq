@@ -1,0 +1,21 @@
+#!/bin/sh
+# Aşırı basit init - PID 1
+# Cartesi machine bu scripti kernel'den sonra çalıştırır.
+
+set -e
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+echo "[init] busybox-lite rootfs ayakta"
+echo "[init] kernel: $(uname -a)"
+
+# Buraya kendi Cartesi DApp mantığınızı (input okuma / output yazma) ekleyin.
+# Örnek: /bin/app varsa onu çalıştır, yoksa shell'e düş.
+if [ -x /bin/app ]; then
+    exec /bin/app
+else
+    echo "[init] /bin/app bulunamadi, interaktif shell'e dusuluyor"
+    exec /bin/sh
+fi

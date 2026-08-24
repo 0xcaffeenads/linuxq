@@ -1,0 +1,92 @@
+name: Build & Deploy Cartesi Machine
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Hedef ağ"
+        required: true
+        type: choice
+        options:
+          - sepolia
+          - mainnet
+          - local-anvil
+        default: sepolia
+      rpc_url:
+        description: "RPC endpoint URL (private key DEĞİL, sadece URL)"
+        required: true
+        type: string
+      contract_address:
+        description: "DApp kontrat adresi (0x...)"
+        required: true
+        type: string
+      do_deploy:
+        description: "Hash'i zincire yaz mı?"
+        required: true
+        type: boolean
+        default: false
+
+# ÖNEMLİ: private key burada input olarak YOK.
+# Repo secrets'ına DEPLOYER_PRIVATE_KEY olarak eklenmeli:
+# Settings -> Secrets and variables -> Actions -> New repository secret
+
+jobs:
+  build-rootfs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (riscv64 emulasyonu için)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build BusyBox rootfs image
+        run: |
+          mkdir -p out
+          docker build -t busybox-lite-rootfs -f docker/Dockerfile .
+          docker run --rm -v "$PWD/out:/out" busybox-lite-rootfs
+
+      - name: Build ext2 image + machine hash
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y e2fsprogs
+          chmod +x scripts/build-image.sh
+          ./scripts/build-image.sh out/rootfs out/rootfs.ext2
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cartesi-machine-image
+          path: |
+            out/rootfs.ext2
+            out/machine-hash.txt
+
+  deploy:
+    needs: build-rootfs
+    if: ${{ github.event.inputs.do_deploy == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cartesi-machine-image
+          path: out
+
+      - name: Install Foundry (cast)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Deploy hash to contract
+        env:
+          # Private key SADECE burada, secret'tan env'e aktarılır.
+          # workflow_dispatch input'u DEĞİL.
+          PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          RPC_URL: ${{ github.event.inputs.rpc_url }}
+          CONTRACT_ADDRESS: ${{ github.event.inputs.contract_address }}
+        run: |
+          chmod +x scripts/deploy_hash.sh
+          ./scripts/deploy_hash.sh out/machine-hash.txt
