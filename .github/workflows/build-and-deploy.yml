@@ -18,7 +18,7 @@ on:
         type: string
       contract_address:
         description: "DApp kontrat adresi (0x...)"
-        required: true
+        required: false
         type: string
       do_deploy:
         description: "Hash'i zincire yaz mı?"
